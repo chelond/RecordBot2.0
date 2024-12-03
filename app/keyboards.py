@@ -13,14 +13,14 @@ inline_keyboard = InlineKeyboardMarkup(
             InlineKeyboardButton(text="5", callback_data='program_5'),
             InlineKeyboardButton(text="6", callback_data='program_6'),
             InlineKeyboardButton(text="7", callback_data='program_7'),
-            InlineKeyboardButton(text="8", callback_data='program_8'),   
+            InlineKeyboardButton(text="8", callback_data='program_8'),
         ]
     ]
 )
 
 inline_keyboard_back = InlineKeyboardMarkup(
     inline_keyboard=[
-        [InlineKeyboardButton(text="Поменять программу", callback_data='back'),]
+        [InlineKeyboardButton(text="Поменять программу", callback_data='back'), ]
     ]
 )
 
@@ -30,3 +30,18 @@ contact_button = [
     ]
 ]
 contact_keyboard = ReplyKeyboardMarkup(keyboard=contact_button, resize_keyboard=True)
+
+general_menu = InlineKeyboardMarkup(
+    inline_keyboard=[
+        [
+            InlineKeyboardButton(text="Расписание на неделю", callback_data="schedule"),
+        ],
+        [
+            InlineKeyboardButton(text="Программы тренировок", callback_data="program"),
+        ],
+        [
+            InlineKeyboardButton(text="Обратная связь", callback_data="feedback"),
+        ]
+    ]
+)
+
