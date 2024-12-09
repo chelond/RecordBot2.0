@@ -27,7 +27,6 @@ def get_db_connection():
         if conn:
             conn.close()
 
-
 def init_db():
     """Initialize database tables"""
     try:
@@ -46,41 +45,78 @@ def init_db():
                 )
             ''')
 
-            # Create questions table
+            # Create tickets table
             cursor.execute('''
-                CREATE TABLE IF NOT EXISTS questions (
+                CREATE TABLE IF NOT EXISTS tickets (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     user_id INTEGER NOT NULL,
-                    question TEXT NOT NULL,
+                    status TEXT NOT NULL DEFAULT 'open',
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            ''')
+
+            # Create ticket_messages table
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS ticket_messages (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    ticket_id INTEGER NOT NULL,
+                    user_id INTEGER NOT NULL,
+                    message TEXT NOT NULL,
+                    message_id INTEGER UNIQUE NOT NULL,
+                    question TEXT,
                     answer TEXT,
-                    message_id INTEGER UNIQUE NOT NULL
+                    answer_created_at TIMESTAMP,
+                    admin_id INTEGER,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                 )
             ''')
 
             # Add indexes for better query performance
             cursor.execute('CREATE INDEX IF NOT EXISTS idx_user_id ON users(user_id)')
-            cursor.execute('CREATE INDEX IF NOT EXISTS idx_questions_user_id ON questions(user_id)')
-            cursor.execute('CREATE INDEX IF NOT EXISTS idx_questions_message_id ON questions(message_id)')
+            cursor.execute('CREATE INDEX IF NOT EXISTS idx_tickets_user_id ON tickets(user_id)')
+            cursor.execute('CREATE INDEX IF NOT EXISTS idx_ticket_messages_ticket_id ON ticket_messages(ticket_id)')
+            cursor.execute('CREATE INDEX IF NOT EXISTS idx_ticket_messages_message_id ON ticket_messages(message_id)')
+
 
             conn.commit()
     except sqlite3.Error as e:
         logger.error(f"Database initialization error: {e}")
         raise
 
-
-def save_question(user_id: int, question: str, message_id: int) -> bool:
-    """Save a new question to the database with message_id"""
+def save_question(user_id: int, question: str, message_id: int, ticket_id: int) -> bool:
+    """Save a new question to the database with message_id and ticket_id"""
     try:
         with get_db_connection() as conn:
             cursor = conn.cursor()
             cursor.execute('''
-                INSERT INTO questions (user_id, question, message_id)
-                VALUES (?, ?, ?)
-            ''', (user_id, question, message_id))
+                INSERT INTO ticket_messages (user_id, message, message_id, question, ticket_id)
+                VALUES (?, ?, ?, ?, ?)
+            ''', (user_id, question, message_id, question, ticket_id))
             conn.commit()
             return True
     except sqlite3.Error as e:
         logger.error(f"Error saving question: {e}")
+        return False
+
+def save_ticket_message(ticket_id: int, user_id: int, message: str, message_id: int, is_question: bool = False) -> bool:
+    """Save a message to a ticket"""
+    try:
+        with get_db_connection() as conn:
+            cursor = conn.cursor()
+            if is_question:
+                cursor.execute('''
+                    INSERT INTO ticket_messages (ticket_id, user_id, message, message_id, question)
+                    VALUES (?, ?, ?, ?, ?)
+                ''', (ticket_id, user_id, message, message_id, message))
+            else:
+                cursor.execute('''
+                    INSERT INTO ticket_messages (ticket_id, user_id, message, message_id)
+                    VALUES (?, ?, ?, ?)
+                ''', (ticket_id, user_id, message, message_id))
+            conn.commit()
+            return True
+    except sqlite3.Error as e:
+        logger.error(f"Error saving ticket message: {e}")
         return False
 
 def get_question_and_username_by_message_id(message_id: int) -> Optional[Tuple[str, str]]:
@@ -89,10 +125,10 @@ def get_question_and_username_by_message_id(message_id: int) -> Optional[Tuple[s
         with get_db_connection() as conn:
             cursor = conn.cursor()
             cursor.execute('''
-                SELECT q.question, u.username
-                FROM questions q
-                JOIN users u ON q.user_id = u.user_id
-                WHERE q.message_id = ?
+                SELECT tm.question, u.username
+                FROM ticket_messages tm
+                JOIN users u ON tm.user_id = u.user_id
+                WHERE tm.message_id = ?
             ''', (message_id,))
             result = cursor.fetchone()
             return (result[0], result[1]) if result else (None, None)
@@ -106,7 +142,7 @@ def get_unanswered_questions() -> List[Tuple]:
     try:
         with get_db_connection() as conn:
             cursor = conn.cursor()
-            cursor.execute('SELECT * FROM questions WHERE answer IS NULL')
+            cursor.execute('SELECT * FROM ticket_messages WHERE answer IS NULL')
             return cursor.fetchall()
     except sqlite3.Error as e:
         logger.error(f"Error fetching unanswered questions: {e}")
@@ -117,7 +153,7 @@ def get_question_by_message_id(message_id: int) -> Optional[str]:
     try:
         with get_db_connection() as conn:
             cursor = conn.cursor()
-            cursor.execute('SELECT question FROM questions WHERE message_id = ?', (message_id,))
+            cursor.execute('SELECT question FROM ticket_messages WHERE message_id = ?', (message_id,))
             result = cursor.fetchone()
             return result[0] if result else None
     except sqlite3.Error as e:
@@ -129,22 +165,23 @@ def get_user_id_by_question_id(message_id: int) -> Optional[int]:
     try:
         with get_db_connection() as conn:
             cursor = conn.cursor()
-            cursor.execute('SELECT user_id FROM questions WHERE message_id = ?', (message_id,))
+            cursor.execute('SELECT user_id FROM ticket_messages WHERE message_id = ?', (message_id,))
             result = cursor.fetchone()
             return result[0] if result else None
     except sqlite3.Error as e:
         logger.error(f"Error fetching user_id for question: {e}")
         return None
-def save_answer(question_id: int, answer: str) -> bool:
+
+def save_answer(question_id: int, answer: str, admin_id: int) -> bool:
     """Save an answer to a question"""
     try:
         with get_db_connection() as conn:
             cursor = conn.cursor()
             cursor.execute('''
-                UPDATE questions
-                SET answer = ?
+                UPDATE ticket_messages
+                SET answer = ?, answer_created_at = CURRENT_TIMESTAMP, admin_id = ?
                 WHERE message_id = ?
-            ''', (answer, question_id))
+            ''', (answer, admin_id, question_id))
             conn.commit()
             return True
     except sqlite3.Error as e:
@@ -233,3 +270,124 @@ def get_user_data(user_id: int) -> Optional[Tuple[Any, ...]]:
     except sqlite3.Error as e:
         logger.error(f"Error fetching user data: {e}")
         return None
+
+def create_ticket(user_id: int) -> int:
+    """Create a new ticket for a user"""
+    try:
+        with get_db_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute('''
+                INSERT INTO tickets (user_id)
+                VALUES (?)
+            ''', (user_id,))
+            ticket_id = cursor.lastrowid
+            conn.commit()
+            return ticket_id
+    except sqlite3.Error as e:
+        logger.error(f"Error creating ticket: {e}")
+        return None
+
+def get_ticket_messages(ticket_id: int) -> List[Tuple]:
+    """Get all messages for a ticket"""
+    try:
+        with get_db_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute('SELECT * FROM ticket_messages WHERE ticket_id = ?', (ticket_id,))
+            return cursor.fetchall()
+    except sqlite3.Error as e:
+        logger.error(f"Error fetching ticket messages: {e}")
+        return []
+
+def close_ticket(ticket_id: int) -> bool:
+    """Close a ticket"""
+    try:
+        with get_db_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute('''
+                UPDATE tickets
+                SET status = 'closed'
+                WHERE id = ?
+            ''', (ticket_id,))
+            conn.commit()
+            return True
+    except sqlite3.Error as e:
+        logger.error(f"Error closing ticket: {e}")
+        return False
+
+def get_ticket_history(ticket_id: int) -> List[Tuple]:
+    """Get the history of a ticket, including the initial question and all subsequent messages"""
+    try:
+        with get_db_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute('''
+                SELECT tm.message, tm.created_at, u.username, tm.answer, tm.answer_created_at, a.username AS admin_username
+                FROM ticket_messages tm
+                JOIN users u ON tm.user_id = u.user_id
+                LEFT JOIN users a ON tm.admin_id = a.user_id
+                WHERE tm.ticket_id = ?
+                ORDER BY tm.created_at
+            ''', (ticket_id,))
+            return cursor.fetchall()
+    except sqlite3.Error as e:
+        logger.error(f"Error fetching ticket history: {e}")
+        return []
+
+def get_user_id_by_ticket_id(ticket_id: int) -> Optional[int]:
+    """Get user_id associated with a ticket by ticket_id"""
+    try:
+        with get_db_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute('SELECT user_id FROM tickets WHERE id = ?', (ticket_id,))
+            result = cursor.fetchone()
+            return result[0] if result else None
+    except sqlite3.Error as e:
+        logger.error(f"Error fetching user_id for ticket: {e}")
+        return None
+
+def get_user_id_by_ticket_message_id(message_id: int) -> Optional[int]:
+    """Get user_id associated with a ticket message by message_id"""
+    try:
+        with get_db_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute('SELECT user_id FROM ticket_messages WHERE message_id = ?', (message_id,))
+            result = cursor.fetchone()
+            return result[0] if result else None
+    except sqlite3.Error as e:
+        logger.error(f"Error fetching user_id for ticket message: {e}")
+        return None
+
+def get_ticket_id_by_message_id(message_id: int) -> Optional[int]:
+    """Get ticket_id associated with a message by message_id"""
+    try:
+        with get_db_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute('SELECT ticket_id FROM ticket_messages WHERE message_id = ?', (message_id,))
+            result = cursor.fetchone()
+            return result[0] if result else None
+    except sqlite3.Error as e:
+        logger.error(f"Error fetching ticket_id for message: {e}")
+        return None
+
+def get_username_by_user_id(user_id: int) -> Optional[str]:
+    """Get username associated with a user by user_id"""
+    try:
+        with get_db_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute('SELECT username FROM users WHERE user_id = ?', (user_id,))
+            result = cursor.fetchone()
+            return result[0] if result else None
+    except sqlite3.Error as e:
+        logger.error(f"Error fetching username for user: {e}")
+        return None
+
+def is_ticket_open(ticket_id: int) -> bool:
+    """Check if a ticket is open"""
+    try:
+        with get_db_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute('SELECT status FROM tickets WHERE id = ?', (ticket_id,))
+            result = cursor.fetchone()
+            return result[0] == 'open' if result else False
+    except sqlite3.Error as e:
+        logger.error(f"Error checking ticket status: {e}")
+        return False

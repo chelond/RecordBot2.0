@@ -1,9 +1,9 @@
 from aiogram import Bot, Router, F
 from aiogram import Dispatcher, types
-from aiogram.types import Message
-from aiogram.utils.keyboard import ReplyKeyboardBuilder
+from aiogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.storage.memory import MemoryStorage
+from aiogram.utils.keyboard import ReplyKeyboardBuilder
 from aiosqlite import connect
 from contextlib import asynccontextmanager
 from typing import Dict, Any, Optional, Tuple
@@ -14,7 +14,8 @@ from contextvars import ContextVar
 
 from app.utils.schedule import admin_create_schedule
 from bd.database import get_user_data, save_answer, get_user_id_by_question_id, get_question_by_message_id, \
-    get_question_and_username_by_message_id
+    get_question_and_username_by_message_id, save_ticket_message, get_ticket_messages, close_ticket, get_ticket_history, \
+    get_user_id_by_ticket_message_id, get_ticket_id_by_message_id, get_username_by_user_id
 from app.fsm_clases.feadback_class import Mailing
 from setings import ADMIN_ID, TOKEN, PHOTO_PATH
 
@@ -31,7 +32,6 @@ db_pool = ContextVar('db_pool', default=None)
 cache = {}
 CACHE_TIMEOUT = 300  # 5 minutes
 BATCH_SIZE = 30  # Number of messages to send in one batch
-
 
 async def get_data_for_admin(user_id: int) -> None:
     """Get and send user data to all admins with error handling"""
@@ -59,7 +59,6 @@ async def get_data_for_admin(user_id: int) -> None:
                 text="Произошла ошибка при получении данных пользователя."
             )
 
-
 @asynccontextmanager
 async def get_db_connection():
     """Context manager for database connections with connection pooling"""
@@ -69,7 +68,6 @@ async def get_db_connection():
             yield db
     else:
         yield db_pool.get()
-
 
 def handle_error(func):
     """Decorator for consistent error handling"""
@@ -89,7 +87,6 @@ def handle_error(func):
 
     return wrapper
 
-
 async def get_cached_user_data(user_id: int) -> Optional[Tuple]:
     """Get user data with caching"""
     current_time = datetime.now()
@@ -102,7 +99,6 @@ async def get_cached_user_data(user_id: int) -> Optional[Tuple]:
     if user_data:
         cache[user_id] = (user_data, current_time)
     return user_data
-
 
 async def send_message_to_user(user_id: int, data: Dict[str, Any]) -> bool:
     """Send a message to a single user with error handling"""
@@ -120,7 +116,6 @@ async def send_message_to_user(user_id: int, data: Dict[str, Any]) -> bool:
         logger.error(f"Failed to send message to {user_id}", error=str(e))
         return False
 
-
 async def send_batch_messages(users: list, data: Dict[str, Any], batch_size: int = BATCH_SIZE):
     """Send messages in batches to avoid rate limiting"""
     for i in range(0, len(users), batch_size):
@@ -130,13 +125,11 @@ async def send_batch_messages(users: list, data: Dict[str, Any], batch_size: int
         await asyncio.sleep(1)  # Rate limiting pause between batches
         yield sum(1 for r in results if r is True), sum(1 for r in results if r is False)
 
-
 @admin_router.message(F.text == "/schedule", F.from_user.id.in_(ADMIN_ID))
 @handle_error
 async def schedule(message: Message):
     await admin_create_schedule()
     await message.answer_photo(types.FSInputFile(path="/home/chel/PycharmProjects/RecordBot2.0/schedule.png"))
-
 
 @admin_router.message(F.text == "рассылка", F.from_user.id.in_(ADMIN_ID))
 @handle_error
@@ -144,7 +137,6 @@ async def cmd_mailing(message: Message, state: FSMContext):
     """Start the mailing process"""
     await message.answer("Введите текст для рассылки:")
     await state.set_state(Mailing.text)
-
 
 @admin_router.message(Mailing.text)
 @handle_error
@@ -158,7 +150,6 @@ async def process_mailing_text(message: Message, state: FSMContext):
         reply_markup=builder.as_markup(resize_keyboard=True)
     )
     await state.set_state(Mailing.photo)
-
 
 @admin_router.message(Mailing.photo)
 @handle_error
@@ -177,7 +168,6 @@ async def process_mailing_photo(message: Message, state: FSMContext):
     else:
         await message.answer("Пожалуйста, используйте кнопки 'Да' или 'Нет'.")
 
-
 @admin_router.message(Mailing.photo_send, F.photo)
 @handle_error
 async def process_photo(message: Message, state: FSMContext):
@@ -187,14 +177,12 @@ async def process_photo(message: Message, state: FSMContext):
     await message.answer("Введите подпись к фотографии (или отправьте пустое сообщение, если подпись не нужна):")
     await state.set_state(Mailing.caption)
 
-
 @admin_router.message(Mailing.caption)
 @handle_error
 async def process_caption(message: Message, state: FSMContext):
     """Process the caption for the photo"""
     await state.update_data(caption=message.text or "")
     await confirm_mailing(message, state)
-
 
 async def confirm_mailing(message: Message, state: FSMContext):
     """Show the mailing preview and ask for confirmation"""
@@ -215,7 +203,6 @@ async def confirm_mailing(message: Message, state: FSMContext):
         reply_markup=builder.as_markup(resize_keyboard=True)
     )
     await state.set_state(Mailing.confirm)
-
 
 @admin_router.message(Mailing.confirm)
 @handle_error
@@ -251,11 +238,11 @@ async def send_mailing(message: Message, state: FSMContext):
     finally:
         await state.clear()
 
-
 @admin_router.message(F.reply_to_message, F.from_user.id.in_(ADMIN_ID))
 @handle_error
 async def answer_question(message: Message, **kwargs):
     """Обработка ответа администратора на вопросы пользователей"""
+    admin_id = message.from_user.id
     if message.from_user.id not in ADMIN_ID:
         await message.answer("У вас нет прав для выполнения этой команды.")
         return
@@ -267,7 +254,7 @@ async def answer_question(message: Message, **kwargs):
     print(f"Handling answer for message_id={question_message_id}")
 
     # Получение user_id из базы данных
-    user_id = get_user_id_by_question_id(question_message_id)
+    user_id = get_user_id_by_ticket_message_id(question_message_id)
 
     if not user_id:
         print(f"User not found for message_id={question_message_id}")
@@ -280,15 +267,28 @@ async def answer_question(message: Message, **kwargs):
     question, username = get_question_and_username_by_message_id(question_message_id)
 
     if not question:
-        await message.answer("❌ Вопрос не найден в базе данных.")
-        return
+        # Try to find the question by ticket_id if message_id is not found
+        ticket_id = get_ticket_id_by_message_id(question_message_id)
+        if ticket_id:
+            questions = get_ticket_messages(ticket_id)
+            if questions:
+                question = questions[-1]['question']
+                username = get_username_by_user_id(user_id)
+            else:
+                await message.answer("❌ Вопрос не найден в базе данных.")
+                return
+        else:
+            await message.answer("❌ Вопрос не найден в базе данных.")
+            return
 
     # Попытка доставить сообщение пользователю
     try:
+        ticket_id = get_ticket_id_by_message_id(question_message_id)
         await bot.send_message(
             chat_id=user_id,
-            text=f"Ответ на ваш вопрос:\n\n{answer}"
-        )
+            text=f"Ответ на ваш вопрос:\n\n{answer}\n\n В случае если Вы получили ответ на свой вопрос или он стал не актуален нажмите на кнопку ниже", reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="Закрыть тикет", callback_data=f"user_close_ticket_{ticket_id}")]
+        ]))
         await message.answer("✅ Ответ успешно доставлен пользователю.")
     except Exception as e:
         error_message = "❌ Не удалось доставить ответ пользователю.\n"
@@ -303,7 +303,7 @@ async def answer_question(message: Message, **kwargs):
         await message.answer(error_message)
 
     # Сохранение ответа в базе данных
-    save_answer(question_message_id, answer)
+    save_answer(question_message_id, answer, admin_id)
 
     admin_info = await bot.get_chat(message.from_user.id)
     admin_username = admin_info.username or admin_info.first_name
@@ -316,3 +316,8 @@ async def answer_question(message: Message, **kwargs):
                       f"Вопрос: {question}\n\n"
                       f"Ответ: {answer}")
             )
+
+    # # Вывод информации о тикете
+    # ticket_id = get_ticket_id_by_message_id(question_message_id)
+    #
+    # await message.answer(f"Информация о тикете:\n\nНомер тикета: {ticket_id}\n\nПользователь: ")
